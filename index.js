@@ -1,4 +1,5 @@
 require("dotenv").config();
+const { REST, Routes, SlashCommandBuilder } = require("discord.js");
 const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
