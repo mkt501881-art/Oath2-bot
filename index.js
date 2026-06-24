@@ -1,7 +1,14 @@
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
-const { Client, GatewayIntentBits } = require("discord.js");
+const crypto = require("crypto");
+const {
+  Client,
+  GatewayIntentBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
+} = require("discord.js");
 
 const app = express();
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -15,90 +22,128 @@ client.on("ready", () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
 
-  if (interaction.commandName === "verify") {
+  // ===== /verify =====
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === "verify") {
 
-    const state = Math.random().toString(36).substring(2, 15);
-    states.set(state, interaction.user.id);
+      const button = new ButtonBuilder()
+        .setCustomId("start_oauth")
+        .setLabel("Googleで認証")
+        .setStyle(ButtonStyle.Primary);
 
-    const url =
-      `https://accounts.google.com/o/oauth2/v2/auth` +
-      `?client_id=${process.env.GOOGLE_CLIENT_ID}` +
-      `&redirect_uri=${process.env.REDIRECT_URI}` +
-      `&response_type=code` +
-      `&scope=openid%20email%20profile` +
-      `&state=${state}`;
+      const row = new ActionRowBuilder().addComponents(button);
 
-    await interaction.reply({
-      content: `👇 ここから認証\n${url}`,
-      ephemeral: true
-    });
+      return interaction.reply({
+        content: "ボタンを押して認証を開始してください",
+        components: [row],
+        ephemeral: true
+      });
+    }
+  }
+
+  // ===== ボタン押下 =====
+  if (interaction.isButton()) {
+    if (interaction.customId === "start_oauth") {
+
+      // state生成（強化版）
+      const state = crypto.randomBytes(16).toString("hex");
+
+      states.set(state, {
+        userId: interaction.user.id,
+        expires: Date.now() + 5 * 60 * 1000 // 5分
+      });
+
+      // OAuth URL
+      const url =
+        `https://accounts.google.com/o/oauth2/v2/auth` +
+        `?client_id=${process.env.GOOGLE_CLIENT_ID}` +
+        `&redirect_uri=${process.env.REDIRECT_URI}` +
+        `&response_type=code` +
+        `&scope=openid%20email%20profile` +
+        `&state=${state}`;
+
+      return interaction.reply({
+        content: `👇 このリンクから認証してください\n${url}`,
+        ephemeral: true
+      });
+    }
   }
 });
 
 // ===== OAuth callback =====
 app.get("/callback", async (req, res) => {
-  const { code, state } = req.query;
-
-  if (!states.has(state)) {
-    return res.send("invalid state");
-  }
-
-  const userId = states.get(state);
-
-  // アクセストークン取得
-  const tokenRes = await axios.post(
-    "https://oauth2.googleapis.com/token",
-    {
-      code,
-      client_id: process.env.GOOGLE_CLIENT_ID,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET,
-      redirect_uri: process.env.REDIRECT_URI,
-      grant_type: "authorization_code"
-    }
-  );
-
-  const accessToken = tokenRes.data.access_token;
-
-  // ユーザー情報取得
-  const userRes = await axios.get(
-    "https://www.googleapis.com/oauth2/v2/userinfo",
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
-      }
-    }
-  );
-
-  const email = userRes.data.email;
-
-  // ドメインチェック
-  if (!email.endsWith("@example.com")) {
-    return res.send("ドメイン不許可");
-  }
-
-  // ===== Discordロール付与 =====
   try {
+    const { code, state } = req.query;
+
+    const data = states.get(state);
+
+    if (!data) {
+      return res.send("invalid state");
+    }
+
+    // ✅ 期限チェック
+    if (Date.now() > data.expires) {
+      states.delete(state);
+      return res.send("⏰ 期限切れ（5分）");
+    }
+
+    const userId = data.userId;
+
+    // ===== トークン取得 =====
+    const tokenRes = await axios.post(
+      "https://oauth2.googleapis.com/token",
+      {
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: process.env.REDIRECT_URI,
+        grant_type: "authorization_code"
+      }
+    );
+
+    const accessToken = tokenRes.data.access_token;
+
+    // ===== ユーザー情報 =====
+    const userRes = await axios.get(
+      "https://www.googleapis.com/oauth2/v2/userinfo",
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      }
+    );
+
+    const email = userRes.data.email;
+
+    // ===== ドメインチェック =====
+    if (!email.endsWith("@stg.nada.ac.jp")) {
+      states.delete(state);
+      return res.send("❌ ドメイン不許可");
+    }
+
+    // ===== ロール付与 =====
     const guild = await client.guilds.fetch(process.env.GUILD_ID);
     const member = await guild.members.fetch(userId);
 
     await member.roles.add(process.env.ROLE_ID);
 
-    res.send("✅ 認証成功！Discordに戻って確認してください");
-  } catch (e) {
-    console.error(e);
-    res.send("エラー発生");
-  }
+    states.delete(state);
 
-  states.delete(state);
+    return res.send("✅ 認証成功！Discordに戻って確認してください");
+
+  } catch (err) {
+    console.error(err);
+    return res.send("エラーが発生しました");
+  }
 });
 
-// ===== HTTP サーバー =====
+// ===== HTTP（Uptime用） =====
 app.get("/", (req, res) => {
   res.send("alive");
 });
 
+// ===== 起動 =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Web起動: ${PORT}`);
