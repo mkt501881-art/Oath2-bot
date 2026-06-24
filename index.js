@@ -95,17 +95,77 @@ app.get("/callback", async (req, res) => {
   try {
     const { code, state } = req.query;
 
+    console.log("=== CALLBACK START ===");
+    console.log("code:", code);
+    console.log("state:", state);
+
     const data = states.get(state);
+    console.log("state data:", data);
 
     if (!data) {
       return res.send("invalid state");
     }
 
-    // ✅ 期限チェック
     if (Date.now() > data.expires) {
       states.delete(state);
       return res.send("⏰ 期限切れ（5分）");
     }
+
+    const userId = data.userId;
+
+    // ===== トークン =====
+    const tokenRes = await axios.post(
+      "https://oauth2.googleapis.com/token",
+      {
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: process.env.REDIRECT_URI,
+        grant_type: "authorization_code"
+      }
+    );
+
+    console.log("TOKEN:", tokenRes.data);
+
+    const accessToken = tokenRes.data.access_token;
+
+    // ===== ユーザー情報 =====
+    const userRes = await axios.get(
+      "https://www.googleapis.com/oauth2/v2/userinfo",
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      }
+    );
+
+    console.log("USER:", userRes.data);
+
+    const email = userRes.data.email;
+    console.log("EMAIL:", email);
+
+    if (!email) {
+      return res.send("❌ email取得できてない");
+    }
+
+    if (!email.endsWith("@stg.nada.ac.jp")) {
+      return res.send(`❌ ドメイン不許可: ${email}`);
+    }
+
+    const guild = await client.guilds.fetch(process.env.GUILD_ID);
+    const member = await guild.members.fetch(userId);
+
+    await member.roles.add(process.env.ROLE_ID);
+
+    states.delete(state);
+
+    return res.send("✅ 認証成功");
+
+  } catch (err) {
+    console.error("ERROR:", err.response?.data || err);
+    return res.send("エラー発生");
+  }
+});
 
     const userId = data.userId;
 
