@@ -17,8 +17,26 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const states = new Map();
 
 // ===== Discord =====
-client.on("ready", () => {
+client.on("ready", async () => {
   console.log(`ログイン: ${client.user.tag}`);
+
+  const commands = [
+    new SlashCommandBuilder()
+      .setName("verify")
+      .setDescription("認証を開始")
+  ].map(cmd => cmd.toJSON());
+
+  const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+
+  try {
+    await rest.put(
+      Routes.applicationCommands(process.env.CLIENT_ID),
+      { body: commands }
+    );
+    console.log("✅ スラッシュコマンド登録完了");
+  } catch (err) {
+    console.error("コマンド登録失敗:", err);
+  }
 });
 
 client.on("interactionCreate", async (interaction) => {
