@@ -167,8 +167,6 @@ app.get("/callback", async (req, res) => {
   }
 });
 
-    const userId = data.userId;
-
     // ===== トークン取得 =====
     const tokenRes = await axios.post(
       "https://oauth2.googleapis.com/token",
